@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from os import listdir, makedirs, path
-from os.path import isfile, join, dirname, exists, splitext
+from os.path import isfile, join, dirname, exists, splitext, basename
 from pathlib import Path
 from matplotlib.pyplot import imsave
 import cv2
@@ -52,9 +52,9 @@ def pad_image_from_centerpoint(img_array, channel = 1, fill = 0):
     center_point[location_data == 255] = 0
     center_point[location_data == 253] = 255
     #threshold the positional information
-    ret, thresh = cv2.threshold(center_point, 252, 255, 0)
+    #ret, thresh = cv2.threshold(center_point, 252, 255, 0)
     #get contours
-    contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(center_point, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     #get countour ares
     areas = get_contour_areas(contours)
     if len(areas) == 0:
@@ -578,10 +578,10 @@ def create_legend_box(dim, size, color = 255):
     b = np.full((size, x), color, dtype = np.uint8)
     c = np.zeros((size, x), dtype = np.uint8)
         
-    b = cv2.putText(b, text = 'PhloemP', org=(int(b.shape[1]*2/8), int(b.shape[0]*3/5)),
+    b = cv2.putText(b, text = 'XPP', org=(int(b.shape[1]*2/8), int(b.shape[0]*3/5)),
                 fontFace=cv2.FONT_HERSHEY_PLAIN, fontScale = 1,
                 color=(inv_color, inv_color, inv_color), thickness = 1)
-    c = cv2.putText(c, text = 'XPP', org=(int(b.shape[1]*2/8), int(b.shape[0]*3/5)),
+    c = cv2.putText(c, text = 'PhloemP', org=(int(b.shape[1]*2/8), int(b.shape[0]*3/5)),
                 fontFace=cv2.FONT_HERSHEY_PLAIN, fontScale = 1,
                 color=(color, color, color), thickness = 1)
     
@@ -695,3 +695,109 @@ def save_stats_csv(stat_array, name_list, filepath, stat_select = 0):
     fname = str(path.basename(filepath)) + '_statsfile.csv'
     df.to_csv(filepath+'/'+fname, sep = ';')
     #return A
+
+def save_individual_signals_from_image_stack(img_stack, roi_position, filename = 'stat_csv'):
+    # Function takes a image stack and returns a 2D array of each image in z direction
+    # represented as 1D average vector in x direction by default maintaining y shape
+    
+    # Get the stack shape
+    dim = img_stack.shape
+    # Generate empty 2D array with selected direction
+    A = np.zeros((dim[0], dim[2]), dtype = np.float64)
+    # Go through each stack
+    for i in range(0,dim[2]):
+        a = np.average(img_stack[:,:,i], axis = 1)
+        A[:,i] = a.ravel()
+    # Convert to dataframe
+    df = pd.DataFrame(A)
+    # Generate labels
+    labels = np.arange(-roi_position, dim[0]-roi_position)
+    # Set row names using another NumPy array
+    df.index = labels
+    # Name the columns as "Image 1" to "Image n"
+    num_columns = df.shape[1]
+    column_names = ['Image {}'.format(i+1) for i in range(num_columns)]
+    df.columns = column_names
+    # Save DataFrame to a CSV file
+    df.to_csv(filename + '.csv')
+
+def plot_percentiles_multi(data, names, path_name, axis = 1, split_fnames = True):
+    # Takes a list of numpy data and plots the median and 5 + 95 percentiles, thanks chatGPT!
+    color_list = ['brown','skyblue','orchid','peru','lightseagreen','hotpink','lightslategray']
+    # Split filenames
+    if split_fnames:
+        new_names = []
+        for n in names:
+            new_n = splitext(basename(n))[0]
+            new_names.append(new_n)
+        names = new_names
+    # Generate lists for data
+    medians = []
+    p95s = []
+    p05s = []
+    for d in data:
+        median = np.median(d, axis = axis)
+        p95 = np.percentile(d, 95, axis = axis)
+        p05 = np.percentile(d, 5, axis = axis)
+        # Append data to lists
+        medians.append(median)
+        p95s.append(p95)
+        p05s.append(p05)
+    # Generate figure
+    fit = plt.figure()
+    # Plot data
+    for i in range(0,len(data)):
+        # Take data from lists
+        plot_median = medians[i]
+        plot_p95 = p95s[i]
+        plot_p05 = p05s[i]
+        # plot median
+        plt.plot(plot_median, color = color_list[i % len(color_list)])
+        plt.fill_between(range(len(plot_median)), plot_p05, plot_p95, color = color_list[i % len(color_list)],
+                         alpha = 0.3, label = names[i])
+    
+    plt.xlabel('Position')
+    plt.ylabel('Intensity')
+    plt.title('Median and Percentile Range')
+    plt.legend()
+    plt.grid()
+    plt.savefig(path_name + '/' + 'Percentile plot.png')
+
+def process_csv_files(csv_filenames):
+    # Load CSV files and trim zero rows
+    data_frames = []
+    zero_row_indices = []
+
+    for filename in csv_filenames:
+        df = pd.read_csv(filename, index_col=0)
+
+        # Find the first row with any non-zero values
+        first_non_zero_row = (df != 0).any(axis=1).idxmax()
+
+        # Trim rows from the beginning and end until the first non-zero row
+        df = df.loc[first_non_zero_row:]
+        data_frames.append(df)
+
+        # Find the row index where 0 occurs in each column
+        zero_row_index = df.apply(lambda col: (col == 0).idxmax(), axis=0)
+        zero_row_indices.append(zero_row_index)
+
+    # Find the common row index with 0 value
+    common_zero_row_index = set(zero_row_indices[0])
+    for index_set in zero_row_indices[1:]:
+        common_zero_row_index.intersection_update(index_set)
+
+    # Create rows filled with zeros and append to data frames
+    for i, df in enumerate(data_frames):
+        zero_row = pd.Series(0, index=df.columns)
+        for col in df.columns:
+            if col not in common_zero_row_index:
+                df = df.append(zero_row.rename(col))
+        #df = df.sort_index()
+
+    # Convert to numpy arrays
+    np_arrays = []
+    for d in data_frames:
+        np_arrays.append(d.to_numpy())
+
+    return np_arrays
